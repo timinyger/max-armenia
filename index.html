@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
-    <title>Max Armenian Premium</title>
+    <title>Max Armenian Premium + Gemini</title>
     
     <script src="https://www.gstatic.com/firebasejs/10.8.0/firebase-app-compat.js"></script>
     <script src="https://www.gstatic.com/firebasejs/10.8.0/firebase-auth-compat.js"></script>
@@ -24,16 +24,249 @@
         
         body, html { 
             margin: 0; padding: 0; 
-            height: 100%; 
-            width: 100%; 
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; 
+            height: 100%; width: 100%; 
+            font-family: -apple-system, sans-serif; 
             background: #ffffff; 
             overflow: hidden;
-            -webkit-tap-highlight-color: transparent;
         }
 
-        #root {
-            height: 100vh;
+        .chat-bg { 
+            background-color: var(--bg-chat); 
+            background-image: url("https://www.transparenttextures.com/patterns/az-subtle.png"); 
+        }
+
+        .am-gradient-header {
+            background: linear-gradient(90deg, var(--am-red) 0%, var(--am-blue) 50%, var(--am-orange) 100%);
+        }
+
+        .gemini-modal {
+            background: rgba(255, 255, 255, 0.95);
+            backdrop-filter: blur(10px);
+            border: 2px solid var(--am-blue);
+            box-shadow: 0 20px 40px rgba(0,0,0,0.2);
+            z-index: 2000;
+        }
+
+        .tg-send-btn {
+            width: 48px; height: 48px;
+            display: flex; align-items: center; justify-content: center;
+            border-radius: 50%;
+            background: linear-gradient(135deg, var(--am-red) 0%, var(--am-blue) 50%, var(--am-orange) 100%);
+            color: white;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+        }
+
+        .message-bubble { border-radius: 18px; box-shadow: 0 2px 4px rgba(0,0,0,0.05); }
+        .my-message { background: #fff9eb !important; border-left: 3px solid var(--am-orange) !important; }
+        .other-message { background: #ffffff !important; border-left: 3px solid var(--am-blue) !important; }
+
+        @keyframes pulse-gold {
+            0% { box-shadow: 0 0 0 0 rgba(197, 160, 89, 0.4); }
+            70% { box-shadow: 0 0 0 10px rgba(197, 160, 89, 0); }
+            100% { box-shadow: 0 0 0 0 rgba(197, 160, 89, 0); }
+        }
+        .ai-pulse { animation: pulse-gold 2s infinite; }
+    </style>
+</head>
+<body>
+    <div id="root" class="h-full"></div>
+
+    <script>
+        const firebaseConfig = {
+            apiKey: "AIzaSyAseFfPuMKOTFdpGAg9WDLORCMnmKux3b0",
+            authDomain: "max-99be6.firebaseapp.com",
+            projectId: "max-99be6",
+            storageBucket: "max-99be6.firebasestorage.app",
+            messagingSenderId: "661150809512",
+            appId: "1:661150809512:android:eb79d663ad15979607f19d"
+        };
+
+        const TG_BOT = "8228030848:AAHs3efZ2B6w3USRtSZlopQL6CT5bvivo04";
+        const DB_PATH = "armenia_gram_pc_v2";
+        const EMOJI_LIST = ['👍', '❤️', '🔥', '😂', '🇦🇲', '🙏', '👏', '🍷', '🏔️', '🦁'];
+
+        function startApp(auth, db) {
+            const { useState, useEffect, useRef, useMemo } = React;
+
+            function App() {
+                const [currentUser, setCurrentUser] = useState(null);
+                const [isLoggedIn, setIsLoggedIn] = useState(false);
+                const [activeChat, setActiveChat] = useState(null);
+                const [messages, setMessages] = useState([]);
+                const [inputText, setInputText] = useState('');
+                const [regName, setRegName] = useState('');
+                
+                // Состояния для Gemini
+                const [showGemini, setShowGemini] = useState(false);
+                const [aiPrompt, setAiPrompt] = useState('');
+                const [aiResult, setAiResult] = useState('');
+                const [isAiLoading, setIsAiLoading] = useState(false);
+
+                useEffect(() => {
+                    auth.signInAnonymously().catch(console.error);
+                    const savedUser = localStorage.getItem('am_user_profile');
+                    if (savedUser) {
+                        setCurrentUser(JSON.parse(savedUser));
+                        setIsLoggedIn(true);
+                    }
+                }, []);
+
+                useEffect(() => {
+                    if (!isLoggedIn) return;
+                    return db.collection('artifacts').doc(DB_PATH).collection('public').doc('data').collection('messages')
+                        .onSnapshot(snap => {
+                            const msgs = snap.docs.map(d => ({id: d.id, ...d.data()}))
+                                .sort((a,b) => (a.createdAt?.seconds || 0) - (b.createdAt?.seconds || 0));
+                            setMessages(msgs);
+                        });
+                }, [isLoggedIn]);
+
+                const chatList = useMemo(() => {
+                    const groups = {};
+                    messages.forEach(m => {
+                        const id = m.chatId || 'global';
+                        groups[id] = { id, name: m.chatTitle || 'Чат', last: m.text || 'Медиа', time: m.createdAt };
+                    });
+                    return Object.values(groups).sort((a,b) => (b.time?.seconds || 0) - (a.time?.seconds || 0));
+                }, [messages]);
+
+                const sendMessage = async (textToPath) => {
+                    const text = typeof textToPath === 'string' ? textToPath : inputText;
+                    if (!text.trim() || !activeChat) return;
+                    
+                    const msgData = {
+                        chatId: activeChat.id,
+                        chatTitle: activeChat.name,
+                        fromId: currentUser.id,
+                        fromName: currentUser.name,
+                        text: text,
+                        reactions: {},
+                        createdAt: firebase.firestore.FieldValue.serverTimestamp()
+                    };
+
+                    setInputText('');
+                    await db.collection('artifacts').doc(DB_PATH).collection('public').doc('data').collection('messages').add(msgData);
+                };
+
+                // Функция вызова Gemini (Имитация или API)
+                const askGemini = async () => {
+                    if (!aiPrompt.trim()) return;
+                    setIsAiLoading(true);
+                    try {
+                        // Здесь можно вставить реальный Fetch к вашему прокси Gemini
+                        // Для примера — имитация ответа через 1.5 сек
+                        setTimeout(() => {
+                            setAiResult(`[Gemini AI]: Брат, я обдумал твой вопрос "${aiPrompt}". Вот мой ответ: Это будет выглядеть отлично в твоем приложении!`);
+                            setIsAiLoading(false);
+                        }, 1500);
+                    } catch (e) {
+                        setIsAiLoading(false);
+                    }
+                };
+
+                if (!isLoggedIn) {
+                    return React.createElement('div', { className: 'h-full flex items-center justify-center bg-zinc-900 chat-bg' },
+                        React.createElement('form', { 
+                            onSubmit: (e) => { e.preventDefault(); if(regName) { const p={id:'u_'+Date.now(), name:regName}; setCurrentUser(p); setIsLoggedIn(true); localStorage.setItem('am_user_profile', JSON.stringify(p)); }},
+                            className: 'bg-white p-8 rounded-[2rem] border-2 border-[#C5A059] flex flex-col gap-4' 
+                        },
+                            React.createElement('h1', { className: 'text-2xl font-black text-center text-[#0033A0]' }, 'MAX ARMENIAN'),
+                            React.createElement('input', { className: 'p-3 border rounded-xl text-center', placeholder: 'Ваше имя', value: regName, onChange: e => setRegName(e.target.value) }),
+                            React.createElement('button', { className: 'bg-[#0033A0] text-white p-3 rounded-xl font-bold' }, 'ВОЙТИ')
+                        )
+                    );
+                }
+
+                return React.createElement('div', { className: 'flex h-screen w-full relative' },
+                    // Список чатов
+                    React.createElement('div', { className: `w-full md:w-80 border-r flex flex-col ${activeChat ? 'hidden md:flex' : 'flex'}` },
+                        React.createElement('div', { className: 'p-4 am-gradient-header text-white font-bold' }, 'MAX ARMENIAN PREMIUM'),
+                        chatList.map(c => React.createElement('div', { 
+                            key: c.id, onClick: () => setActiveChat(c),
+                            className: 'p-4 border-b cursor-pointer hover:bg-gray-50' 
+                        }, c.name))
+                    ),
+
+                    // Окно чата
+                    activeChat && React.createElement('div', { className: 'flex-1 flex flex-col bg-[#f0f2f5] relative' },
+                        React.createElement('div', { className: 'p-3 bg-white border-b flex items-center gap-3' },
+                            React.createElement('button', { onClick: () => setActiveChat(null), className: 'md:hidden' }, '⬅️'),
+                            React.createElement('span', { className: 'font-bold' }, activeChat.name)
+                        ),
+                        
+                        React.createElement('div', { className: 'flex-1 overflow-y-auto p-4 chat-bg flex flex-col gap-3' },
+                            messages.filter(m => m.chatId === activeChat.id).map(m => React.createElement('div', {
+                                key: m.id, className: `flex ${m.fromId === currentUser.id ? 'justify-end' : 'justify-start'}`
+                            }, 
+                                React.createElement('div', { className: `message-bubble p-3 max-w-[80%] ${m.fromId === currentUser.id ? 'my-message' : 'other-message'}` },
+                                    React.createElement('div', { className: 'text-[10px] font-bold text-blue-600' }, m.fromName),
+                                    m.text
+                                )
+                            ))
+                        ),
+
+                        // Панель ввода
+                        React.createElement('div', { className: 'p-3 bg-white border-t flex gap-2 items-center' },
+                            // Кнопка Gemini
+                            React.createElement('button', { 
+                                onClick: () => setShowGemini(true),
+                                className: 'w-12 h-12 rounded-full bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center text-2xl ai-pulse'
+                            }, '🤖'),
+                            
+                            React.createElement('input', { 
+                                className: 'flex-1 bg-gray-100 p-3 rounded-2xl outline-none',
+                                placeholder: 'Сообщение...',
+                                value: inputText,
+                                onChange: e => setInputText(e.target.value)
+                            }),
+                            React.createElement('button', { onClick: sendMessage, className: 'tg-send-btn' }, '🚀')
+                        )
+                    ),
+
+                    // МОДАЛЬНОЕ ОКНО GEMINI
+                    showGemini && React.createElement('div', { className: 'fixed inset-0 flex items-center justify-center p-4 z-[3000] bg-black/50' },
+                        React.createElement('div', { className: 'gemini-modal w-full max-w-md rounded-[2.5rem] p-6 flex flex-col gap-4' },
+                            React.createElement('div', { className: 'flex justify-between items-center border-b pb-2' },
+                                React.createElement('span', { className: 'font-black text-blue-600' }, 'GEMINI AI ASSISTANT'),
+                                React.createElement('button', { onClick: () => {setShowGemini(false); setAiResult('');}, className: 'text-gray-400' }, '✕')
+                            ),
+                            React.createElement('textarea', { 
+                                className: 'w-full p-3 bg-gray-50 border rounded-xl h-24 outline-none focus:border-blue-500',
+                                placeholder: 'О чем спросим нейронку, брат?',
+                                value: aiPrompt,
+                                onChange: e => setAiPrompt(e.target.value)
+                            }),
+                            React.createElement('button', { 
+                                onClick: askGemini,
+                                disabled: isAiLoading,
+                                className: `w-full p-3 rounded-xl font-bold text-white transition-all ${isAiLoading ? 'bg-gray-400' : 'bg-blue-600 hover:bg-blue-700'}`
+                            }, isAiLoading ? 'ДУМАЮ...' : 'СГЕНЕРИРОВАТЬ ТЕКСТ'),
+                            
+                            aiResult && React.createElement('div', { className: 'flex flex-col gap-2' },
+                                React.createElement('div', { className: 'p-3 bg-blue-50 rounded-xl text-sm italic border border-blue-100 max-h-40 overflow-y-auto' }, aiResult),
+                                React.createElement('div', { className: 'flex gap-2' },
+                                    React.createElement('button', { 
+                                        onClick: () => { setInputText(aiResult); setShowGemini(false); },
+                                        className: 'flex-1 p-2 bg-amber-500 text-white rounded-lg text-xs font-bold'
+                                    }, 'ВСТАВИТЬ В ПОЛЕ'),
+                                    React.createElement('button', { 
+                                        onClick: () => { sendMessage(aiResult); setShowGemini(false); },
+                                        className: 'flex-1 p-2 bg-green-600 text-white rounded-lg text-xs font-bold'
+                                    }, 'ОТПРАВИТЬ СРАЗУ')
+                                )
+                            )
+                        )
+                    )
+                );
+            }
+            ReactDOM.createRoot(document.getElementById('root')).render(React.createElement(App));
+        }
+
+        firebase.initializeApp(firebaseConfig);
+        startApp(firebase.auth(), firebase.firestore());
+    </script>
+</body>
+</html>
             height: 100dvh; /* Динамическая высота для мобильных */
         }
 
